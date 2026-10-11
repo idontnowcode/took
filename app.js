@@ -41,6 +41,7 @@
 
   // ---------- 메모 파일 만들기 ----------
   const pad = n => String(n).padStart(2, '0');
+  const showTime = d => `${String(d.getFullYear()).slice(2)}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} (${pad(d.getHours())}:${pad(d.getMinutes())})`;   // 화면 표기: 26/10/11 (23:26)
   const localIso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   function newId() {
     const a = new Uint8Array(6);
@@ -119,34 +120,49 @@
         document.head.appendChild(s);
       });
     },
-    // interactive=false면 창을 띄우지 않고 조용히 시도만 한다(#83: 매번 로그인이 뜨는지 검증할 지점).
+    // 토큰은 이 기기 안(IndexedDB)에 유효시간(약 1시간)까지 보관해 앱을 껐다 켜도 다시 로그인하지 않는다.
+    // 로그인 창은 사용자가 누른 동작(저장·다시 불러오기·보내기)에서만 띄운다. 자동으로 띄우면 팝업 차단에 걸린다.
     async auth(interactive) {
+      if (!this.token) {
+        const saved = await get('kv', 'token');
+        if (saved && saved.t) { this.token = saved.t; this.exp = saved.exp; }
+      }
       if (this.token && Date.now() < this.exp - 60000) return this.token;
       if (!navigator.onLine) throw new Error('오프라인');
-      // 로그인 창은 사용자가 누른 동작(저장·탭 열기·대기 보내기)에서만 띄운다. 자동으로 띄우면 팝업 차단에 걸린다.
       if (!interactive) throw new Error('로그인 필요');
       await this.loadGis();
+      const hint = await get('kv', 'hint');                 // 계정 힌트가 있으면 계정 선택 없이 창이 바로 닫힌다
       return new Promise((res, rej) => {
-        const c = google.accounts.oauth2.initTokenClient({
+        const c = google.accounts.oauth2.initTokenClient(Object.assign({
           client_id: CFG.clientId,
           scope: 'https://www.googleapis.com/auth/drive.file',
-          prompt: interactive ? '' : 'none',
-          callback: r => {
+          prompt: '',
+          callback: async r => {
             if (r.error) return rej(new Error('로그인 필요'));
             this.token = r.access_token;
             this.exp = Date.now() + (Number(r.expires_in) || 3600) * 1000;
+            await put('kv', { t: this.token, exp: this.exp }, 'token');
+            if (!hint) this.rememberHint();
             res(this.token);
           },
           error_callback: e => rej(new Error('로그인 창이 닫혔거나 막힘' + (e && e.type ? ` (${e.type})` : '')))
-        });
+        }, hint ? { hint } : {}));
         c.requestAccessToken();
       });
+    },
+    async rememberHint() {
+      try {
+        const r = await fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',
+          { headers: { Authorization: 'Bearer ' + this.token } });
+        const j = await r.json();
+        if (j.user && j.user.emailAddress) await put('kv', j.user.emailAddress, 'hint');   // 이 기기 안에만 둔다
+      } catch (e) { /* 힌트가 없어도 동작한다 */ }
     },
     async api(path, opts, interactive) {
       const t = await this.auth(interactive);
       const r = await fetch('https://www.googleapis.com' + path,
         Object.assign({}, opts, { headers: Object.assign({}, (opts && opts.headers) || {}, { Authorization: 'Bearer ' + t }) }));
-      if (r.status === 401) { this.token = null; throw new Error('로그인 만료'); }
+      if (r.status === 401) { this.token = null; await del('kv', 'token'); throw new Error('로그인 만료'); }
       if (!r.ok) throw new Error('Drive 오류 ' + r.status);
       return r;
     },
@@ -346,7 +362,7 @@
       const badge = document.createElement('span');
       badge.className = 'badge' + (r.status === 'queued' ? ' wait' : r.status === 'canceled' ? ' cancel' : '');
       badge.textContent = r.status === 'queued' ? '대기' : r.status === 'canceled' ? '취소됨' : '저장됨';
-      meta.append(`${pad(t.getMonth() + 1)}/${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`, badge);
+      meta.append(showTime(t), badge);
       if (r.f && r.f.thread) meta.append(`이어쓰기: ${r.f.thread}`);
       const p = document.createElement('p');
       p.className = 'text';
@@ -398,15 +414,21 @@
     return out.join('\n');
   }
 
+  // 탭을 열 때는 로그인 없이 마지막으로 받은 요약을 먼저 보여 주고, 토큰이 살아 있으면 조용히 새로 받는다.
+  // 토큰이 없으면 "다시 불러오기"를 눌렀을 때만 로그인한다.
   async function loadBrief(interactive) {
     const box = $('#brief');
+    const cached = await get('kv', 'brief');
+    if (cached && !interactive) box.innerHTML = renderMd(cached);
     try {
       const text = await B.readText('복귀요약.md', interactive);
       await put('kv', text, 'brief');
       box.innerHTML = renderMd(text);
     } catch (e) {
-      const cached = await get('kv', 'brief');
-      box.innerHTML = (cached ? renderMd(cached) : '') + `<p class="msg err">새로 불러오지 못함: ${esc(e.message)}${cached ? ' — 마지막으로 받은 내용' : ''}</p>`;
+      const note = e.message === '로그인 필요'
+        ? '최신 요약을 받으려면 아래 "다시 불러오기"를 누르세요'
+        : `새로 불러오지 못함: ${esc(e.message)}`;
+      box.innerHTML = (cached ? renderMd(cached) : '') + `<p class="msg${cached ? '' : ' err'}">${note}${cached ? ' — 지금 보이는 것은 마지막으로 받은 내용' : ''}</p>`;
     }
   }
 
@@ -454,7 +476,7 @@
     } catch (e) {
       ul.textContent = '';
       am.className = 'msg err';
-      am.textContent = '불러오지 못함: ' + e.message;
+      am.textContent = e.message === '로그인 필요' ? '제안을 보려면 "다시 불러오기"를 누르세요' : '불러오지 못함: ' + e.message;
     }
   }
 
@@ -514,8 +536,8 @@
       $('#tab-write').hidden = b.dataset.tab !== 'write';
       $('#tab-brief').hidden = b.dataset.tab !== 'brief';
       $('#tab-approve').hidden = b.dataset.tab !== 'approve';
-      if (b.dataset.tab === 'brief') loadBrief(true);
-      if (b.dataset.tab === 'approve') loadApprovals(true);
+      if (b.dataset.tab === 'brief') loadBrief(false);
+      if (b.dataset.tab === 'approve') loadApprovals(false);
     }));
   }
 
