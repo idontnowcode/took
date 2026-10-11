@@ -1,5 +1,5 @@
 // 앱 화면 파일만 캐시해 오프라인에서도 열리게 한다. 입력 대기열은 IndexedDB에 있어 캐시 갱신과 무관하다(#100).
-const CACHE = 'took-v7';
+const CACHE = 'took-v8';
 const SHELL = ['./', './index.html', './style.css', './app.js', './config.js', './manifest.webmanifest', './icon.svg', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => {
   // 브라우저 HTTP 캐시를 거치지 않고 새로 받는다(배포 뒤 옛 화면 파일이 캐시에 남는 것 방지)

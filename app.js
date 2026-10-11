@@ -8,6 +8,7 @@
   // 클라이언트 ID가 없거나, 이 PC의 미리보기(127.0.0.1)에서 ?mock 으로 열면 모의 모드(로그인 없이 화면 시험용)
   const MOCK = !CFG.clientId || (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('mock'));
   const EDIT_MS = 5 * 60 * 1000;
+  const APP_VERSION = 'v8';                     // sw.js의 CACHE 이름과 같이 올린다
   const $ = s => document.querySelector(s);
 
   // ---------- 기기 저장소(IndexedDB) ----------
@@ -619,7 +620,7 @@
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
-    $('#mode').textContent = B.label;
+    $('#mode').textContent = `${B.label} · ${APP_VERSION}`;
     $('#dev').hidden = !MOCK;
     $('#form').addEventListener('submit', onSave);
     $('#cancelEdit').addEventListener('click', resetForm);
@@ -644,7 +645,13 @@
     flush(false);
     setInterval(render, 30000);              // 5분 지난 항목의 수정·취소 버튼을 숨긴다
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+      // 새 버전이 설치되면 화면을 한 번 새로고침해 바로 적용한다(첫 설치 때는 새로고침하지 않음)
+      const hadController = !!navigator.serviceWorker.controller;
+      let reloaded = false;
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (hadController && !reloaded) { reloaded = true; location.reload(); }
+      });
+      navigator.serviceWorker.register('sw.js').then(r => r.update()).catch(() => {});
     }
   });
 
