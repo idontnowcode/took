@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#1f2a37">
+<title>빠른 메모</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>빠른 메모</h1>
+  <span id="mode" class="mode"></span>
+  <span id="queue" class="queue" hidden></span>
+</header>
+
+<nav role="tablist">
+  <button role="tab" aria-selected="true" data-tab="write">입력</button>
+  <button role="tab" aria-selected="false" data-tab="brief">요약</button>
+</nav>
+
+<main>
+  <section id="tab-write">
+    <form id="form" autocomplete="off">
+      <div id="linkBox" hidden>
+        <label>링크<input id="url" type="url" readonly></label>
+        <label>제목<input id="title" type="text"></label>
+        <label>왜 저장하나 (한 줄, 필수)<input id="note" type="text" maxlength="200"></label>
+      </div>
+      <textarea id="body" rows="7" placeholder="떠오른 것을 그대로 적기. 맨 앞에 ! 를 붙이면 중요 표시" autofocus></textarea>
+      <div class="row">
+        <select id="thread" aria-label="이어쓰기 대상">
+          <option value="">새 메모</option>
+        </select>
+        <label class="check"><input id="sensitive" type="checkbox"> 민감</label>
+      </div>
+      <div class="row">
+        <button id="save" type="submit" class="primary">저장</button>
+        <button id="cancelEdit" type="button" hidden>수정 그만</button>
+      </div>
+      <p id="msg" class="msg" role="status" aria-live="polite"></p>
+    </form>
+
+    <h2>최근 입력</h2>
+    <ul id="recent" class="recent"></ul>
+  </section>
+
+  <section id="tab-brief" hidden>
+    <div id="brief" class="brief">불러오는 중…</div>
+    <button id="reloadBrief" type="button">다시 불러오기</button>
+  </section>
+
+  <details id="dev" hidden>
+    <summary>개발용(모의 모드)</summary>
+    <label class="check"><input id="forceOffline" type="checkbox"> 오프라인처럼 동작</label>
+    <button id="resetMock" type="button">모의 저장소 비우기</button>
+  </details>
+</main>
+
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
