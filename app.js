@@ -73,6 +73,8 @@
   // ---------- 저장소: 모의 / Drive ----------
   const SAMPLE_BRIEF = '# 복귀 요약 — 모의 모드\n\n> PC 분류 루틴이 만든 요약이 여기에 보입니다.\n\n## 오늘 할 3가지\n1. 예시 할 일 — 예시 아이디어의 다음 행동\n\n## 상태\n- 승인 대기 제안: 0건\n';
   const SAMPLE_LIST = '- example-idea | 예시 아이디어 | 다듬는 중\n';
+  const SAMPLE_PROPOSALS = '# 제안 목록\n\n- [ ] [일정] 2026-10-14 예시 약속 (원본: 00_Inbox/예시.md) <!--ex1-->\n' +
+    '- [ ] [이동] 00_Inbox/예시2.md → 02_Learning (확신도 0.72) · 예시 메모 <!--ex2-->\n- [x] [이동] 이미 승인된 예시 <!--ex3-->\n';
   const Mock = {
     label: '모의 모드 — 이 기기에만 저장',
     store() { try { return JSON.parse(localStorage.getItem('quick-memo-mock') || '{}'); } catch (e) { return {}; } },
@@ -93,7 +95,15 @@
       s[id].content = content;
       this.save(s);
     },
-    async readText(name) { this.check(); return name === '목록.md' ? SAMPLE_LIST : SAMPLE_BRIEF; }
+    async readText(name) {
+      this.check();
+      if (name === '승인.md') return localStorage.getItem('quick-memo-mock-approvals') || '';
+      return name === '목록.md' ? SAMPLE_LIST : name === '제안.md' ? SAMPLE_PROPOSALS : SAMPLE_BRIEF;
+    },
+    async writeText(name, content) {
+      this.check();
+      if (name === '승인.md') localStorage.setItem('quick-memo-mock-approvals', content);
+    }
   };
 
   const Drive = {
@@ -188,6 +198,10 @@
     async readText(name, interactive) {
       const id = await this.appFile(name, interactive);
       return (await this.api(`/drive/v3/files/${id}?alt=media`, {}, interactive)).text();
+    },
+    async writeText(name, content, interactive) {
+      const id = await this.appFile(name, interactive);
+      await this.update(id, content, interactive);
     }
   };
   const B = MOCK ? Mock : Drive;
@@ -393,6 +407,68 @@
     }
   }
 
+  // ---------- 승인 탭: 제안 사본을 읽고, 체크한 항목의 key를 승인.md에 쓴다(PC가 다음 실행에 반영) ----------
+  function parseProposals(md) {
+    const out = [];
+    for (const line of md.split(/\r?\n/)) {
+      const m = line.match(/^\s*-\s*\[ \]\s*(.*?)\s*<!--(\S+?)-->\s*$/);
+      if (!m) continue;
+      const k = m[1].match(/^\[([^\]]+)\]\s*(.*)$/);
+      out.push({ key: m[2], kind: k ? k[1] : '', text: k ? k[2] : m[1] });
+    }
+    return out;
+  }
+  function parseApprovals(md) {
+    return (md || '').split(/\r?\n/).map(l => l.match(/^\s*-\s*(\S+)/)).filter(Boolean).map(m => m[1]);
+  }
+
+  async function loadApprovals(interactive) {
+    const ul = $('#proposals');
+    const am = $('#approveMsg');
+    am.textContent = '';
+    try {
+      const [prop, appr] = await Promise.all([B.readText('제안.md', interactive), B.readText('승인.md', interactive)]);
+      const pending = new Set(parseApprovals(appr));
+      const items = parseProposals(prop).slice(0, 10);            // 한 번에 10개까지(Rule 14장)
+      ul.textContent = '';
+      if (!items.length) { ul.innerHTML = '<li>승인할 제안이 없습니다.</li>'; return; }
+      for (const it of items) {
+        const li = document.createElement('li');
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.value = it.key;
+        cb.checked = pending.has(it.key);
+        const span = document.createElement('span');
+        const kind = document.createElement('span');
+        kind.className = 'kind';
+        kind.textContent = it.kind;
+        span.append(kind, it.text);
+        label.append(cb, span);
+        li.append(label);
+        ul.append(li);
+      }
+    } catch (e) {
+      ul.textContent = '';
+      am.className = 'msg err';
+      am.textContent = '불러오지 못함: ' + e.message;
+    }
+  }
+
+  async function sendApprovals() {
+    const am = $('#approveMsg');
+    const keys = [...document.querySelectorAll('#proposals input:checked')].map(c => c.value);
+    const stamp = localIso(new Date());
+    try {
+      await B.writeText('승인.md', keys.map(k => `- ${k} | ${stamp}`).join('\n') + (keys.length ? '\n' : ''), true);
+      am.className = 'msg';
+      am.textContent = keys.length ? `${keys.length}건 보냄 — 다음 PC 실행 때 반영됩니다` : '보낼 승인이 없어 대기 목록을 비웠습니다';
+    } catch (e) {
+      am.className = 'msg err';
+      am.textContent = '보내지 못함: ' + e.message;
+    }
+  }
+
   async function loadIdeas() {
     let text = null;
     try { text = await B.readText('목록.md', false); await put('kv', text, 'ideas'); }
@@ -430,7 +506,9 @@
       document.querySelectorAll('nav [role=tab]').forEach(x => x.setAttribute('aria-selected', String(x === b)));
       $('#tab-write').hidden = b.dataset.tab !== 'write';
       $('#tab-brief').hidden = b.dataset.tab !== 'brief';
+      $('#tab-approve').hidden = b.dataset.tab !== 'approve';
       if (b.dataset.tab === 'brief') loadBrief(true);
+      if (b.dataset.tab === 'approve') loadApprovals(true);
     }));
   }
 
@@ -440,6 +518,8 @@
     $('#form').addEventListener('submit', onSave);
     $('#cancelEdit').addEventListener('click', resetForm);
     $('#reloadBrief').addEventListener('click', () => loadBrief(true));
+    $('#sendApprovals').addEventListener('click', sendApprovals);
+    $('#reloadApprovals').addEventListener('click', () => loadApprovals(true));
     $('#resetMock').addEventListener('click', async () => {
       localStorage.removeItem('quick-memo-mock');
       for (const r of await all('recent')) await del('recent', r.id);

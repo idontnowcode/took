@@ -19,6 +19,7 @@
 <nav role="tablist">
   <button role="tab" aria-selected="true" data-tab="write">입력</button>
   <button role="tab" aria-selected="false" data-tab="brief">요약</button>
+  <button role="tab" aria-selected="false" data-tab="approve">승인</button>
 </nav>
 
 <main>
@@ -50,6 +51,16 @@
   <section id="tab-brief" hidden>
     <div id="brief" class="brief">불러오는 중…</div>
     <button id="reloadBrief" type="button">다시 불러오기</button>
+  </section>
+
+  <section id="tab-approve" hidden>
+    <p class="hint">체크한 항목은 다음 PC 실행 때 반영됩니다. 그 전까지는 체크를 풀고 다시 보내면 취소됩니다.</p>
+    <ul id="proposals" class="proposals"></ul>
+    <div class="row">
+      <button id="sendApprovals" type="button" class="primary">승인 보내기</button>
+      <button id="reloadApprovals" type="button">다시 불러오기</button>
+    </div>
+    <p id="approveMsg" class="msg" role="status" aria-live="polite"></p>
   </section>
 
   <details id="dev" hidden>
