@@ -8,6 +8,7 @@
     --accent: #4c8dff; --accent-fg: #0b0f14; --warn: #e3b341; --warn-bg: #2b2414; --ok: #3fb950; }
 }
 * { box-sizing: border-box; }
+html, body { overscroll-behavior-y: contain; }   /* 당겨서 새로고침 막기(새로고침되면 탭이 처음으로 돌아감) */
 html, body { margin: 0; background: var(--bg); color: var(--fg);
   font: 16px/1.5 system-ui, -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; }
 header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; padding: 12px 16px 4px; }

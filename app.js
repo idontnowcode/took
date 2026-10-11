@@ -530,15 +530,22 @@
   }
 
   // ---------- 시작 ----------
+  function showTab(name) {
+    const b = document.querySelector(`nav [data-tab="${name}"]`) || document.querySelector('nav [data-tab="write"]');
+    document.querySelectorAll('nav [role=tab]').forEach(x => x.setAttribute('aria-selected', String(x === b)));
+    $('#tab-write').hidden = b.dataset.tab !== 'write';
+    $('#tab-brief').hidden = b.dataset.tab !== 'brief';
+    $('#tab-approve').hidden = b.dataset.tab !== 'approve';
+    try { sessionStorage.setItem('tab', b.dataset.tab); } catch (e) { /* 기억 못 해도 동작한다 */ }
+    if (b.dataset.tab === 'brief') loadBrief(false);
+    if (b.dataset.tab === 'approve') loadApprovals(false);
+  }
   function tabs() {
-    document.querySelectorAll('nav [role=tab]').forEach(b => b.addEventListener('click', () => {
-      document.querySelectorAll('nav [role=tab]').forEach(x => x.setAttribute('aria-selected', String(x === b)));
-      $('#tab-write').hidden = b.dataset.tab !== 'write';
-      $('#tab-brief').hidden = b.dataset.tab !== 'brief';
-      $('#tab-approve').hidden = b.dataset.tab !== 'approve';
-      if (b.dataset.tab === 'brief') loadBrief(false);
-      if (b.dataset.tab === 'approve') loadApprovals(false);
-    }));
+    document.querySelectorAll('nav [role=tab]').forEach(b => b.addEventListener('click', () => showTab(b.dataset.tab)));
+    let last = null;
+    try { last = sessionStorage.getItem('tab'); } catch (e) { /* 없음 */ }
+    // 공유로 열렸으면 입력 탭, 아니면 이 세션에서 마지막으로 보던 탭으로 돌아간다(새로고침돼도 유지)
+    if (last && last !== 'write' && !new URLSearchParams(location.search).toString()) showTab(last);
   }
 
   document.addEventListener('DOMContentLoaded', async () => {
