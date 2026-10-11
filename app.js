@@ -8,7 +8,7 @@
   // 클라이언트 ID가 없거나, 이 PC의 미리보기(127.0.0.1)에서 ?mock 으로 열면 모의 모드(로그인 없이 화면 시험용)
   const MOCK = !CFG.clientId || (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('mock'));
   const EDIT_MS = 5 * 60 * 1000;
-  const APP_VERSION = 'v9';                     // sw.js의 CACHE 이름과 같이 올린다
+  const APP_VERSION = 'v10';                     // sw.js의 CACHE 이름과 같이 올린다
   const $ = s => document.querySelector(s);
 
   // ---------- 기기 저장소(IndexedDB) ----------
@@ -130,6 +130,7 @@
     async writeText(name, content) {
       this.check();
       if (name === '승인.md') localStorage.setItem('took-mock-approvals', content);
+      else localStorage.setItem('took-mock-file-' + name, content);
     },
     async addEvent(ev) {
       this.check();
@@ -625,6 +626,18 @@
     }
   }
 
+  // PC에 "지금 분류" 요청: 앱 폴더의 분류요청.md에 한 줄을 쓰면, 켜져 있는 PC가 5분 안에 보고 분류한다
+  async function requestRun() {
+    const msgs = document.querySelectorAll('.requestMsg');
+    const show = (t, err) => msgs.forEach(m => { m.className = 'msg requestMsg' + (err ? ' err' : ''); m.textContent = t; });
+    try {
+      await B.writeText('분류요청.md', `- ${localIso(new Date())}\n`, true);
+      show('요청함 — PC가 켜져 있으면 5분 안에 분류합니다. 잠시 뒤 "다시 불러오기"를 누르세요');
+    } catch (e) {
+      show('요청하지 못함: ' + e.message, true);
+    }
+  }
+
   let ideasLoaded = false;
   async function loadIdeas(interactive) {
     let text = null;
@@ -688,6 +701,7 @@
     $('#sendApprovals').addEventListener('click', sendApprovals);
     $('#queue').addEventListener('click', () => flush(true));
     $('#reloadApprovals').addEventListener('click', () => loadApprovals(true));
+    document.querySelectorAll('.requestRun').forEach(b => b.addEventListener('click', requestRun));
     $('#resetMock').addEventListener('click', async () => {
       localStorage.removeItem('took-mock');
       for (const r of await all('recent')) await del('recent', r.id);
