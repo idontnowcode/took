@@ -40,7 +40,7 @@
         <label class="check"><input id="sensitive" type="checkbox"> 민감</label>
       </div>
       <div class="row">
-        <button id="save" type="submit" class="primary">저장</button>
+        <button id="save" type="button" class="primary">저장</button>
         <button id="cancelEdit" type="button" hidden>수정 그만</button>
       </div>
       <p id="msg" class="msg" role="status" aria-live="polite"></p>
@@ -52,9 +52,9 @@
 
   <section id="tab-brief" hidden>
     <div id="brief" class="brief">불러오는 중…</div>
-    <div class="row">
+    <div class="row secondary">
       <button id="reloadBrief" type="button">다시 불러오기</button>
-      <button class="requestRun" type="button">PC에 지금 분류 요청</button>
+      <button class="requestRun" type="button">지금 분류 요청</button>
     </div>
     <p class="msg requestMsg" role="status" aria-live="polite"></p>
   </section>
@@ -64,6 +64,8 @@
     <ul id="proposals" class="proposals"></ul>
     <div class="row">
       <button id="sendApprovals" type="button" class="primary">보내기</button>
+    </div>
+    <div class="row secondary">
       <button id="reloadApprovals" type="button">다시 불러오기</button>
       <button class="requestRun" type="button">지금 분류 요청</button>
     </div>
@@ -77,6 +79,8 @@
     <button id="resetMock" type="button">모의 저장소 비우기</button>
   </details>
 </main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
 <script src="config.js"></script>
 <script src="app.js"></script>

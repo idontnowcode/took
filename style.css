@@ -67,4 +67,14 @@ button.primary { background: var(--accent); color: var(--accent-fg); border-colo
 .proposals .kind { font-size: 12px; color: var(--accent); font-weight: 600; margin-right: 4px; }
 details { margin-top: 24px; font-size: 13px; color: var(--muted); }
 details button { margin-top: 8px; }
+button { white-space: nowrap; }
+.row.secondary button { flex: 1; font-size: 14px; padding: 9px 8px; }
+button.busy { opacity: .7; }
+button:disabled { cursor: progress; }
+.toast { position: fixed; left: 0; right: 0; margin: 0 auto; bottom: calc(20px + env(safe-area-inset-bottom));
+  width: min(92vw, 420px); box-sizing: border-box; word-break: keep-all; padding: 12px 16px; border-radius: 12px; font-size: 14px; line-height: 1.4;
+  background: #1b1f24; color: #fff; box-shadow: 0 6px 24px rgba(0,0,0,.25); z-index: 50; text-align: center; }
+.toast.ok { background: #1a7f37; }
+.toast.err { background: #b35900; }
+@media (prefers-color-scheme: dark) { .toast { background: #e6e9ed; color: #0b0f14; } .toast.ok { background: #3fb950; color: #0b0f14; } .toast.err { background: #e3b341; color: #0b0f14; } }
 [hidden] { display: none !important; }

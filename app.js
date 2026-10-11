@@ -8,7 +8,7 @@
   // 클라이언트 ID가 없거나, 이 PC의 미리보기(127.0.0.1)에서 ?mock 으로 열면 모의 모드(로그인 없이 화면 시험용)
   const MOCK = !CFG.clientId || (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('mock'));
   const EDIT_MS = 5 * 60 * 1000;
-  const APP_VERSION = 'v10';                     // sw.js의 CACHE 이름과 같이 올린다
+  const APP_VERSION = 'v11';                     // sw.js의 CACHE 이름과 같이 올린다
   const $ = s => document.querySelector(s);
 
   // ---------- 기기 저장소(IndexedDB) ----------
@@ -673,6 +673,42 @@
     history.replaceState(null, '', location.pathname);
   }
 
+  // ---------- 눌렀다는 표시: 버튼은 "…중"으로 바꾸고, 끝나면 화면 아래 알림으로 결과를 보인다 ----------
+  let toastTimer = null;
+  function toast(text, kind, ms) {
+    const t = $('#toast');
+    t.textContent = text;
+    t.className = 'toast' + (kind ? ' ' + kind : '');
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    if (ms !== 0) toastTimer = setTimeout(() => { t.hidden = true; }, ms || 3200);
+  }
+  function wire(btn, busyText, fn, msgSel, doneText) {
+    if (!btn) return;
+    const handler = async e => {
+      if (e && e.preventDefault && e.type === 'submit') e.preventDefault();
+      if (btn.disabled) return;
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.classList.add('busy');
+      btn.textContent = busyText;
+      toast(busyText, '', 0);
+      try {
+        await fn(e);
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('busy');
+        btn.textContent = label;
+        if (btn.id === 'sendApprovals') markDirty();
+        if (btn.id === 'save') btn.textContent = editingId ? '수정 저장' : '저장';
+        const m = msgSel ? [...document.querySelectorAll(msgSel)].find(x => !x.closest('[hidden]') && x.textContent) : null;
+        const err = m && m.classList.contains('err');
+        toast((m && m.textContent) || doneText || '완료', err ? 'err' : 'ok');
+      }
+    };
+    btn.addEventListener('click', handler);
+  }
+
   // ---------- 시작 ----------
   function showTab(name) {
     const b = document.querySelector(`nav [data-tab="${name}"]`) || document.querySelector('nav [data-tab="write"]');
@@ -695,13 +731,14 @@
   document.addEventListener('DOMContentLoaded', async () => {
     $('#mode').textContent = `${B.label} · ${APP_VERSION}`;
     $('#dev').hidden = !MOCK;
-    $('#form').addEventListener('submit', onSave);
+    wire($('#save'), '저장 중…', onSave, '#msg');
+    $('#form').addEventListener('submit', e => { e.preventDefault(); $('#save').click(); });   // 입력 칸에서 Enter를 눌러도 같은 경로로
     $('#cancelEdit').addEventListener('click', resetForm);
-    $('#reloadBrief').addEventListener('click', () => loadBrief(true));
-    $('#sendApprovals').addEventListener('click', sendApprovals);
-    $('#queue').addEventListener('click', () => flush(true));
-    $('#reloadApprovals').addEventListener('click', () => loadApprovals(true));
-    document.querySelectorAll('.requestRun').forEach(b => b.addEventListener('click', requestRun));
+    wire($('#reloadBrief'), '불러오는 중…', () => loadBrief(true), '#tab-brief .brief .msg', '요약을 새로 불러왔습니다');
+    wire($('#sendApprovals'), '보내는 중…', sendApprovals, '#approveMsg');
+    wire($('#queue'), '보내는 중…', () => flush(true), '#msg', '대기 중이던 메모를 보냈습니다');
+    wire($('#reloadApprovals'), '불러오는 중…', () => loadApprovals(true), '#approveMsg', '제안을 새로 불러왔습니다');
+    document.querySelectorAll('.requestRun').forEach(b => wire(b, '요청 중…', requestRun, '.requestMsg'));
     $('#resetMock').addEventListener('click', async () => {
       localStorage.removeItem('took-mock');
       for (const r of await all('recent')) await del('recent', r.id);
