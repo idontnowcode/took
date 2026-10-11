@@ -8,7 +8,7 @@
   // 클라이언트 ID가 없거나, 이 PC의 미리보기(127.0.0.1)에서 ?mock 으로 열면 모의 모드(로그인 없이 화면 시험용)
   const MOCK = !CFG.clientId || (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('mock'));
   const EDIT_MS = 5 * 60 * 1000;
-  const APP_VERSION = 'v8';                     // sw.js의 CACHE 이름과 같이 올린다
+  const APP_VERSION = 'v9';                     // sw.js의 CACHE 이름과 같이 올린다
   const $ = s => document.querySelector(s);
 
   // ---------- 기기 저장소(IndexedDB) ----------
@@ -73,6 +73,30 @@
     return L.join('\n');
   }
 
+  // ---------- 일정 ----------
+  // 제안 문구: "2026-10-12 09:30 제목 (원본: …)" 또는 "2026-10-12 제목 (원본: …)"
+  function parseEvent(item) {
+    const m = (item.text || '').match(/^(\d{4}-\d{2}-\d{2})(?:\s+(\d{2}:\d{2}))?\s+(.+?)(?:\s+\(원본:.*)?(?:\s*·\s*캘린더 등록됨)?$/);
+    return m ? { key: item.key, date: m[1], time: m[2] || '', title: m[3].trim() } : null;
+  }
+  function eventBody(ev) {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Seoul';
+    const body = { summary: ev.title, description: 'Took에서 승인한 일정', extendedProperties: { private: { tookKey: ev.key } } };
+    if (ev.time) {
+      const s = new Date(`${ev.date}T${ev.time}:00`);
+      const e = new Date(s.getTime() + 60 * 60 * 1000);
+      const f = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00`;
+      body.start = { dateTime: f(s), timeZone: tz };
+      body.end = { dateTime: f(e), timeZone: tz };
+    } else {
+      const d = new Date(`${ev.date}T00:00:00`);
+      const n = new Date(d.getTime() + 24 * 60 * 60 * 1000);
+      body.start = { date: ev.date };
+      body.end = { date: `${n.getFullYear()}-${pad(n.getMonth() + 1)}-${pad(n.getDate())}` };
+    }
+    return body;
+  }
+
   // ---------- 저장소: 모의 / Drive ----------
   const SAMPLE_BRIEF = '# 복귀 요약 — 모의 모드\n\n> PC 분류 루틴이 만든 요약이 여기에 보입니다.\n\n## 오늘 할 3가지\n1. 예시 할 일 — 예시 아이디어의 다음 행동\n\n## 상태\n- 승인 대기 제안: 0건\n';
   const SAMPLE_LIST = '- example-idea | 예시 아이디어 | 다듬는 중\n';
@@ -106,12 +130,19 @@
     async writeText(name, content) {
       this.check();
       if (name === '승인.md') localStorage.setItem('took-mock-approvals', content);
+    },
+    async addEvent(ev) {
+      this.check();
+      const all = JSON.parse(localStorage.getItem('took-mock-events') || '{}');
+      if (!all[ev.key]) all[ev.key] = eventBody(ev);
+      localStorage.setItem('took-mock-events', JSON.stringify(all));
+      return 'mock-' + ev.key;
     }
   };
 
   const Drive = {
     label: 'Google Drive',
-    token: null, exp: 0, folderId: null, authing: null,
+    tokens: {}, authing: {}, folderId: null,
     async loadGis() {
       if (window.google && google.accounts && google.accounts.oauth2) return;
       await new Promise((res, rej) => {
@@ -124,17 +155,17 @@
     },
     // 토큰은 이 기기 안(IndexedDB)에 유효시간(약 1시간)까지 보관해 앱을 껐다 켜도 다시 로그인하지 않는다.
     // 로그인 창은 사용자가 누른 동작(저장·다시 불러오기·보내기)에서만 띄운다. 자동으로 띄우면 팝업 차단에 걸린다.
-    async auth(interactive) {
-      if (this.authing) return this.authing;
-      this.authing = this.authInner(interactive).finally(() => { this.authing = null; });
-      return this.authing;
+    async auth(interactive, kind) {
+      kind = kind || 'drive';
+      if (this.authing[kind]) return this.authing[kind];
+      this.authing[kind] = this.authInner(interactive, kind).finally(() => { this.authing[kind] = null; });
+      return this.authing[kind];
     },
-    async authInner(interactive) {
-      if (!this.token) {
-        const saved = await get('kv', 'token');
-        if (saved && saved.t) { this.token = saved.t; this.exp = saved.exp; }
-      }
-      if (this.token && Date.now() < this.exp - 60000) return this.token;
+    async authInner(interactive, kind) {
+      const SCOPE = { drive: 'https://www.googleapis.com/auth/drive.file', cal: 'https://www.googleapis.com/auth/calendar.events' }[kind];
+      const key = kind === 'drive' ? 'token' : 'token-' + kind;
+      const tk = this.tokens[kind] || (await get('kv', key));
+      if (tk && tk.t && Date.now() < tk.exp - 60000) { this.tokens[kind] = tk; return tk.t; }
       if (!navigator.onLine) throw new Error('오프라인');
       if (!interactive) throw new Error('로그인 필요');
       await this.loadGis();
@@ -142,25 +173,26 @@
       return new Promise((res, rej) => {
         const c = google.accounts.oauth2.initTokenClient(Object.assign({
           client_id: CFG.clientId,
-          scope: 'https://www.googleapis.com/auth/drive.file',
+          scope: SCOPE,
+          include_granted_scopes: true,
           prompt: '',
           callback: async r => {
             if (r.error) return rej(new Error('로그인 필요'));
-            this.token = r.access_token;
-            this.exp = Date.now() + (Number(r.expires_in) || 3600) * 1000;
-            await put('kv', { t: this.token, exp: this.exp }, 'token');
-            if (!hint) this.rememberHint();
-            res(this.token);
+            const v = { t: r.access_token, exp: Date.now() + (Number(r.expires_in) || 3600) * 1000 };
+            this.tokens[kind] = v;
+            await put('kv', v, key);
+            if (!hint) this.rememberHint(v.t);
+            res(v.t);
           },
           error_callback: e => rej(new Error('로그인 창이 닫혔거나 막힘' + (e && e.type ? ` (${e.type})` : '')))
         }, hint ? { hint } : {}));
         c.requestAccessToken();
       });
     },
-    async rememberHint() {
+    async rememberHint(token) {
       try {
         const r = await fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)',
-          { headers: { Authorization: 'Bearer ' + this.token } });
+          { headers: { Authorization: 'Bearer ' + token } });
         const j = await r.json();
         if (j.user && j.user.emailAddress) await put('kv', j.user.emailAddress, 'hint');   // 이 기기 안에만 둔다
       } catch (e) { /* 힌트가 없어도 동작한다 */ }
@@ -169,7 +201,7 @@
       const t = await this.auth(interactive);
       const r = await fetch('https://www.googleapis.com' + path,
         Object.assign({}, opts, { headers: Object.assign({}, (opts && opts.headers) || {}, { Authorization: 'Bearer ' + t }) }));
-      if (r.status === 401) { this.token = null; await del('kv', 'token'); throw new Error('로그인 만료'); }
+      if (r.status === 401) { this.tokens.drive = null; await del('kv', 'token'); throw new Error('로그인 만료'); }
       if (!r.ok) throw new Error('Drive 오류 ' + r.status);
       return r;
     },
@@ -227,6 +259,21 @@
     async writeText(name, content, interactive) {
       const id = await this.appFile(name, interactive);
       await this.update(id, content, interactive);
+    },
+    async addEvent(ev) {
+      const tk = await this.auth(true, 'cal');
+      const H = { Authorization: 'Bearer ' + tk, 'Content-Type': 'application/json' };
+      const base = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
+      const found = await fetch(`${base}?privateExtendedProperty=${encodeURIComponent('tookKey=' + ev.key)}&maxResults=1`, { headers: H });
+      if (found.status === 401 || found.status === 403) {
+        this.tokens.cal = null; await del('kv', 'token-cal');
+        throw new Error(found.status === 403 ? '캘린더 권한·API가 꺼져 있음' : '캘린더 로그인 만료');
+      }
+      const fj = await found.json();
+      if (fj.items && fj.items.length) return fj.items[0].id;              // 이미 넣었음
+      const r = await fetch(base, { method: 'POST', headers: H, body: JSON.stringify(eventBody(ev)) });
+      if (!r.ok) throw new Error('캘린더 등록 실패 ' + r.status);
+      return (await r.json()).id;
     }
   };
   const B = MOCK ? Mock : Drive;
@@ -455,7 +502,7 @@
   function parseApprovals(md) {
     const map = new Map();
     for (const l of (md || '').split(/\r?\n/)) {
-      const m = l.match(/^\s*-\s*(\S+)(?:\s*\|\s*(approve|reject))?/);
+      const m = l.match(/^\s*-\s*(\S+)(?:\s*\|\s*(approve-cal|approve|reject))?/);
       if (m) map.set(m[1], m[2] || 'approve');
     }
     return map;
@@ -484,12 +531,14 @@
       acts.className = 'acts';
       if (sent) {
         li.classList.add('sent');
-        li.append(head(sent === 'approve' ? '승인 보냄 · 다음 PC 실행 때 반영' : '거절 보냄 · 다음 PC 실행 때 반영', sent));
-        const undo = document.createElement('button');
-        undo.type = 'button';
-        undo.textContent = '되돌리기';
-        undo.onclick = () => { approvalsView.pending.delete(it.key); choices.delete(it.key); renderApprovals(); markDirty(); };
-        acts.append(undo);
+        li.append(head(sent === 'approve-cal' ? '승인 · 캘린더에 등록됨' : sent === 'approve' ? '승인 보냄 · 다음 PC 실행 때 반영' : '거절 보냄 · 다음 PC 실행 때 반영', sent === 'reject' ? 'reject' : 'approve'));
+        if (sent !== 'approve-cal') {              // 캘린더에 이미 넣은 일정은 되돌리지 않는다(지우려면 캘린더에서 직접)
+          const undo = document.createElement('button');
+          undo.type = 'button';
+          undo.textContent = '되돌리기';
+          undo.onclick = () => { approvalsView.pending.delete(it.key); choices.delete(it.key); renderApprovals(); markDirty(); };
+          acts.append(undo);
+        }
       } else {
         for (const [act, label] of [['approve', '승인'], ['reject', '거절']]) {
           const b = document.createElement('button');
@@ -549,7 +598,17 @@
   async function sendApprovals() {
     const am = $('#approveMsg');
     const merged = new Map(approvalsView.pending);
-    for (const [k, v] of choices) merged.set(k, v);
+    const calErrors = [];
+    let calOk = 0;
+    for (const [k, v] of choices) {
+      merged.set(k, v);
+      const it = approvalsView.items.find(i => i.key === k);
+      if (v !== 'approve' || !it || it.kind !== '일정') continue;
+      const ev = parseEvent(it);
+      if (!ev) { calErrors.push('날짜를 못 읽음'); continue; }
+      try { await B.addEvent(ev); merged.set(k, 'approve-cal'); calOk++; }
+      catch (e) { calErrors.push(e.message); }                 // 실패하면 그냥 승인으로 보내고, PC 요약에 캘린더 추가 링크가 생긴다
+    }
     const stamp = localIso(new Date());
     try {
       await B.writeText('승인.md', [...merged].map(([k, v]) => `- ${k} | ${v} | ${stamp}`).join('\n') + (merged.size ? '\n' : ''), true);
@@ -558,7 +617,8 @@
       await put('kv', { items: approvalsView.items, pending: [...merged] }, 'approvals-view');
       renderApprovals();
       am.className = 'msg';
-      am.textContent = merged.size ? `보냄 — 승인 ${[...merged.values()].filter(v => v === 'approve').length}건, 거절 ${[...merged.values()].filter(v => v === 'reject').length}건. 다음 PC 실행 때 반영됩니다` : '보낸 것을 모두 되돌렸습니다';
+      am.textContent = (merged.size ? `보냄 — 승인 ${[...merged.values()].filter(v => v !== 'reject').length}건, 거절 ${[...merged.values()].filter(v => v === 'reject').length}건. 다음 PC 실행 때 반영됩니다` : '보낸 것을 모두 되돌렸습니다')
+        + (calOk ? ` · 캘린더에 ${calOk}건 등록` : '') + (calErrors.length ? ` · 캘린더 등록 못 함(${calErrors[0]}) — 요약의 링크로 추가하세요` : '');
     } catch (e) {
       am.className = 'msg err';
       am.textContent = '보내지 못함: ' + e.message;
