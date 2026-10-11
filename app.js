@@ -5,7 +5,8 @@
 (() => {
   'use strict';
   const CFG = window.APP_CONFIG || {};
-  const MOCK = !CFG.clientId;
+  // 클라이언트 ID가 없거나, 이 PC의 미리보기(127.0.0.1)에서 ?mock 으로 열면 모의 모드(로그인 없이 화면 시험용)
+  const MOCK = !CFG.clientId || (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('mock'));
   const EDIT_MS = 5 * 60 * 1000;
   const $ = s => document.querySelector(s);
 
@@ -109,7 +110,7 @@
 
   const Drive = {
     label: 'Google Drive',
-    token: null, exp: 0, folderId: null,
+    token: null, exp: 0, folderId: null, authing: null,
     async loadGis() {
       if (window.google && google.accounts && google.accounts.oauth2) return;
       await new Promise((res, rej) => {
@@ -123,6 +124,11 @@
     // 토큰은 이 기기 안(IndexedDB)에 유효시간(약 1시간)까지 보관해 앱을 껐다 켜도 다시 로그인하지 않는다.
     // 로그인 창은 사용자가 누른 동작(저장·다시 불러오기·보내기)에서만 띄운다. 자동으로 띄우면 팝업 차단에 걸린다.
     async auth(interactive) {
+      if (this.authing) return this.authing;
+      this.authing = this.authInner(interactive).finally(() => { this.authing = null; });
+      return this.authing;
+    },
+    async authInner(interactive) {
       if (!this.token) {
         const saved = await get('kv', 'token');
         if (saved && saved.t) { this.token = saved.t; this.exp = saved.exp; }
@@ -432,62 +438,126 @@
     }
   }
 
-  // ---------- 승인 탭: 제안 사본을 읽고, 체크한 항목의 key를 승인.md에 쓴다(PC가 다음 실행에 반영) ----------
+  // ---------- 승인 탭: 제안 사본을 읽고, 항목마다 승인·거절을 골라 승인.md에 쓴다(PC가 다음 실행에 반영) ----------
+  // 승인.md 한 줄: "- <key> | approve|reject | 시각". 제안.md에서 PC가 반영한 줄은 [x](승인)·[-](거절)로 바뀐다.
   function parseProposals(md) {
     const out = [];
-    for (const line of md.split(/\r?\n/)) {
-      const m = line.match(/^\s*-\s*\[ \]\s*(.*?)\s*<!--(\S+?)-->\s*$/);
+    for (const line of (md || '').split(/\r?\n/)) {
+      const m = line.match(/^\s*-\s*\[([ xX-])\]\s*(.*?)\s*<!--(\S+?)-->\s*$/);
       if (!m) continue;
-      const k = m[1].match(/^\[([^\]]+)\]\s*(.*)$/);
-      out.push({ key: m[2], kind: k ? k[1] : '', text: k ? k[2] : m[1] });
+      const k = m[2].match(/^\[([^\]]+)\]\s*(.*)$/);
+      const st = m[1] === ' ' ? 'open' : m[1] === '-' ? 'rejected' : 'approved';
+      out.push({ key: m[3], state: st, kind: k ? k[1] : '', text: k ? k[2] : m[2] });
     }
     return out;
   }
   function parseApprovals(md) {
-    return (md || '').split(/\r?\n/).map(l => l.match(/^\s*-\s*(\S+)/)).filter(Boolean).map(m => m[1]);
+    const map = new Map();
+    for (const l of (md || '').split(/\r?\n/)) {
+      const m = l.match(/^\s*-\s*(\S+)(?:\s*\|\s*(approve|reject))?/);
+      if (m) map.set(m[1], m[2] || 'approve');
+    }
+    return map;
+  }
+
+  let approvalsView = { items: [], pending: new Map() };
+  const choices = new Map();                    // 아직 보내지 않은 선택: key → approve|reject
+
+  function renderApprovals() {
+    const ul = $('#proposals');
+    ul.textContent = '';
+    const open = approvalsView.items.filter(i => i.state === 'open').slice(0, 10);   // 한 번에 10개까지(Rule 14장)
+    const closed = approvalsView.items.filter(i => i.state !== 'open').slice(-5);
+    if (!open.length && !closed.length) { ul.innerHTML = '<li>승인할 제안이 없습니다.</li>'; return; }
+    const head = (text, cls) => { const p = document.createElement('div'); p.className = 'state ' + (cls || ''); p.textContent = text; return p; };
+    for (const it of open) {
+      const li = document.createElement('li');
+      const body = document.createElement('div');
+      const kind = document.createElement('span');
+      kind.className = 'kind';
+      kind.textContent = it.kind;
+      body.append(kind, it.text);
+      li.append(body);
+      const sent = approvalsView.pending.get(it.key);
+      const acts = document.createElement('div');
+      acts.className = 'acts';
+      if (sent) {
+        li.classList.add('sent');
+        li.append(head(sent === 'approve' ? '승인 보냄 · 다음 PC 실행 때 반영' : '거절 보냄 · 다음 PC 실행 때 반영', sent));
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.textContent = '되돌리기';
+        undo.onclick = () => { approvalsView.pending.delete(it.key); choices.delete(it.key); renderApprovals(); markDirty(); };
+        acts.append(undo);
+      } else {
+        for (const [act, label] of [['approve', '승인'], ['reject', '거절']]) {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = label;
+          b.className = 'choice ' + act + (choices.get(it.key) === act ? ' on' : '');
+          b.setAttribute('aria-pressed', String(choices.get(it.key) === act));
+          b.onclick = () => { choices.get(it.key) === act ? choices.delete(it.key) : choices.set(it.key, act); renderApprovals(); markDirty(); };
+          acts.append(b);
+        }
+      }
+      li.append(acts);
+      ul.append(li);
+    }
+    if (closed.length) {
+      const h = document.createElement('li');
+      h.className = 'closed-head';
+      h.textContent = '최근 처리됨';
+      ul.append(h);
+      for (const it of closed) {
+        const li = document.createElement('li');
+        li.className = 'closed';
+        li.append(head(it.state === 'approved' ? '처리됨 · 승인' : '처리됨 · 거절', it.state === 'approved' ? 'approve' : 'reject'));
+        const body = document.createElement('div');
+        body.textContent = `${it.kind ? '[' + it.kind + '] ' : ''}${it.text}`;
+        li.append(body);
+        ul.append(li);
+      }
+    }
+  }
+  let dirty = false;
+  function markDirty() {
+    dirty = choices.size > 0 || dirty;
+    $('#sendApprovals').textContent = choices.size ? `보내기 (${choices.size})` : (dirty ? '변경 보내기' : '보내기');
   }
 
   async function loadApprovals(interactive) {
-    const ul = $('#proposals');
     const am = $('#approveMsg');
     am.textContent = '';
+    const cached = await get('kv', 'approvals-view');
+    if (cached && !interactive) { approvalsView = { items: cached.items, pending: new Map(cached.pending) }; renderApprovals(); }
     try {
-      const [prop, appr] = await Promise.all([B.readText('제안.md', interactive), B.readText('승인.md', interactive)]);
-      const pending = new Set(parseApprovals(appr));
-      const items = parseProposals(prop).slice(0, 10);            // 한 번에 10개까지(Rule 14장)
-      ul.textContent = '';
-      if (!items.length) { ul.innerHTML = '<li>승인할 제안이 없습니다.</li>'; return; }
-      for (const it of items) {
-        const li = document.createElement('li');
-        const label = document.createElement('label');
-        const cb = document.createElement('input');
-        cb.type = 'checkbox';
-        cb.value = it.key;
-        cb.checked = pending.has(it.key);
-        const span = document.createElement('span');
-        const kind = document.createElement('span');
-        kind.className = 'kind';
-        kind.textContent = it.kind;
-        span.append(kind, it.text);
-        label.append(cb, span);
-        li.append(label);
-        ul.append(li);
-      }
+      const prop = await B.readText('제안.md', interactive);      // 순서대로 읽는다(동시에 읽으면 로그인 창이 두 번 뜬다)
+      const appr = await B.readText('승인.md', interactive);
+      approvalsView = { items: parseProposals(prop), pending: parseApprovals(appr) };
+      for (const [k] of approvalsView.pending) if (!approvalsView.items.some(i => i.key === k && i.state === 'open')) approvalsView.pending.delete(k);
+      await put('kv', { items: approvalsView.items, pending: [...approvalsView.pending] }, 'approvals-view');
+      choices.clear(); dirty = false; markDirty();
+      renderApprovals();
     } catch (e) {
-      ul.textContent = '';
-      am.className = 'msg err';
-      am.textContent = e.message === '로그인 필요' ? '제안을 보려면 "다시 불러오기"를 누르세요' : '불러오지 못함: ' + e.message;
+      if (!cached) $('#proposals').textContent = '';
+      am.className = 'msg' + (e.message === '로그인 필요' ? '' : ' err');
+      am.textContent = e.message === '로그인 필요' ? '최신 제안을 받으려면 "다시 불러오기"를 누르세요' : '불러오지 못함: ' + e.message;
     }
   }
 
   async function sendApprovals() {
     const am = $('#approveMsg');
-    const keys = [...document.querySelectorAll('#proposals input:checked')].map(c => c.value);
+    const merged = new Map(approvalsView.pending);
+    for (const [k, v] of choices) merged.set(k, v);
     const stamp = localIso(new Date());
     try {
-      await B.writeText('승인.md', keys.map(k => `- ${k} | ${stamp}`).join('\n') + (keys.length ? '\n' : ''), true);
+      await B.writeText('승인.md', [...merged].map(([k, v]) => `- ${k} | ${v} | ${stamp}`).join('\n') + (merged.size ? '\n' : ''), true);
+      approvalsView.pending = merged;
+      choices.clear(); dirty = false; markDirty();
+      await put('kv', { items: approvalsView.items, pending: [...merged] }, 'approvals-view');
+      renderApprovals();
       am.className = 'msg';
-      am.textContent = keys.length ? `${keys.length}건 보냄 — 다음 PC 실행 때 반영됩니다` : '보낼 승인이 없어 대기 목록을 비웠습니다';
+      am.textContent = merged.size ? `보냄 — 승인 ${[...merged.values()].filter(v => v === 'approve').length}건, 거절 ${[...merged.values()].filter(v => v === 'reject').length}건. 다음 PC 실행 때 반영됩니다` : '보낸 것을 모두 되돌렸습니다';
     } catch (e) {
       am.className = 'msg err';
       am.textContent = '보내지 못함: ' + e.message;
