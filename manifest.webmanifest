@@ -1,6 +1,6 @@
 {
-  "name": "빠른 메모",
-  "short_name": "빠른 메모",
+  "name": "Took",
+  "short_name": "Took",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

@@ -1,6 +1,6 @@
-// 빠른 메모: 입력 전용 PWA.
+// Took: 입력 전용 PWA. 툭 적어 두면, 정리는 밤사이에.
 // - 글 상자 하나에 적고 저장. 판단하지 않는다. 오프라인이면 기기에 대기했다가 연결되면 보낸다.
-// - Drive에는 앱이 만든 전용 폴더(빠른입력)에만 쓴다(drive.file 권한). PC 분류 루틴이 그 폴더를 읽는다.
+// - Drive에는 앱이 만든 전용 폴더(Took)에만 쓴다(drive.file 권한). PC 분류 루틴이 그 폴더를 읽는다.
 // - 저장 후 5분 안에는 수정·취소할 수 있다. 취소는 지우지 않고 'status: canceled'로 표시한다(원본 삭제 금지).
 (() => {
   'use strict';
@@ -13,7 +13,7 @@
   let dbp;
   function db() {
     if (!dbp) dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('quick-memo', 1);
+      const r = indexedDB.open('took', 1);
       r.onupgradeneeded = () => {
         const d = r.result;
         d.createObjectStore('queue', { keyPath: 'qid', autoIncrement: true });
@@ -77,8 +77,8 @@
     '- [ ] [이동] 00_Inbox/예시2.md → 02_Learning (확신도 0.72) · 예시 메모 <!--ex2-->\n- [x] [이동] 이미 승인된 예시 <!--ex3-->\n';
   const Mock = {
     label: '모의 모드 — 이 기기에만 저장',
-    store() { try { return JSON.parse(localStorage.getItem('quick-memo-mock') || '{}'); } catch (e) { return {}; } },
-    save(s) { localStorage.setItem('quick-memo-mock', JSON.stringify(s)); },
+    store() { try { return JSON.parse(localStorage.getItem('took-mock') || '{}'); } catch (e) { return {}; } },
+    save(s) { localStorage.setItem('took-mock', JSON.stringify(s)); },
     check() { if ($('#forceOffline').checked || !navigator.onLine) throw new Error('오프라인'); },
     async create(name, content) {
       this.check();
@@ -97,12 +97,12 @@
     },
     async readText(name) {
       this.check();
-      if (name === '승인.md') return localStorage.getItem('quick-memo-mock-approvals') || '';
+      if (name === '승인.md') return localStorage.getItem('took-mock-approvals') || '';
       return name === '목록.md' ? SAMPLE_LIST : name === '제안.md' ? SAMPLE_PROPOSALS : SAMPLE_BRIEF;
     },
     async writeText(name, content) {
       this.check();
-      if (name === '승인.md') localStorage.setItem('quick-memo-mock-approvals', content);
+      if (name === '승인.md') localStorage.setItem('took-mock-approvals', content);
     }
   };
 
@@ -123,6 +123,8 @@
     async auth(interactive) {
       if (this.token && Date.now() < this.exp - 60000) return this.token;
       if (!navigator.onLine) throw new Error('오프라인');
+      // 로그인 창은 사용자가 누른 동작(저장·탭 열기·대기 보내기)에서만 띄운다. 자동으로 띄우면 팝업 차단에 걸린다.
+      if (!interactive) throw new Error('로그인 필요');
       await this.loadGis();
       return new Promise((res, rej) => {
         const c = google.accounts.oauth2.initTokenClient({
@@ -168,7 +170,7 @@
     async folder(interactive) {
       if (!this.folderId) this.folderId = (await get('kv', 'folderId')) || null;
       if (!this.folderId) {
-        this.folderId = await this.findOrCreateFolder(CFG.folderName || '빠른입력', null, interactive);
+        this.folderId = await this.findOrCreateFolder(CFG.folderName || 'Took', null, interactive);
         await put('kv', this.folderId, 'folderId');
       }
       return this.folderId;
@@ -259,6 +261,7 @@
     resetForm();
     msg('저장했습니다');
     await flush(true);
+    if (!ideasLoaded) loadIdeas(true);         // 첫 로그인 뒤 이어쓰기 목록을 새로 받는다
   }
 
   async function saveEdit(body) {
@@ -331,7 +334,7 @@
     const q = await all('queue');
     const qb = $('#queue');
     qb.hidden = q.length === 0;
-    qb.textContent = `대기 ${q.length}건`;
+    qb.textContent = `대기 ${q.length}건 · 보내기`;
     const recent = (await all('recent')).sort((a, b) => b.createdAt - a.createdAt);
     const ul = $('#recent');
     ul.textContent = '';
@@ -350,7 +353,7 @@
       p.textContent = r.summary;
       const loc = document.createElement('div');
       loc.className = 'meta';
-      loc.textContent = `위치: ${CFG.folderName || '빠른입력'}/${r.name} (PC 분류 후 이동될 수 있음)`;
+      loc.textContent = `위치: ${CFG.folderName || 'Took'}/${r.name} (PC 분류 후 이동될 수 있음)`;
       li.append(meta, p, loc);
       if (!r.canceled && Date.now() - r.createdAt <= EDIT_MS) {
         const acts = document.createElement('div');
@@ -469,11 +472,14 @@
     }
   }
 
-  async function loadIdeas() {
+  let ideasLoaded = false;
+  async function loadIdeas(interactive) {
     let text = null;
-    try { text = await B.readText('목록.md', false); await put('kv', text, 'ideas'); }
+    try { text = await B.readText('목록.md', !!interactive); await put('kv', text, 'ideas'); ideasLoaded = true; }
     catch (e) { text = await get('kv', 'ideas'); }
     const sel = $('#thread');
+    const keep = sel.value;
+    while (sel.options.length > 1) sel.remove(1);
     for (const line of (text || '').split(/\r?\n/)) {
       const m = line.match(/^\s*-\s*([^|]+?)\s*\|\s*([^|]+?)\s*(\|\s*(.+))?$/);
       if (!m) continue;
@@ -482,6 +488,7 @@
       o.textContent = `이어쓰기: ${m[2]}`;
       sel.append(o);
     }
+    sel.value = keep;
   }
 
   function readShare() {
@@ -519,9 +526,10 @@
     $('#cancelEdit').addEventListener('click', resetForm);
     $('#reloadBrief').addEventListener('click', () => loadBrief(true));
     $('#sendApprovals').addEventListener('click', sendApprovals);
+    $('#queue').addEventListener('click', () => flush(true));
     $('#reloadApprovals').addEventListener('click', () => loadApprovals(true));
     $('#resetMock').addEventListener('click', async () => {
-      localStorage.removeItem('quick-memo-mock');
+      localStorage.removeItem('took-mock');
       for (const r of await all('recent')) await del('recent', r.id);
       for (const q of await all('queue')) await del('queue', q.qid);
       render();
