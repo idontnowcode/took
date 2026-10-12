@@ -8,7 +8,7 @@
   // 클라이언트 ID가 없거나, 이 PC의 미리보기(127.0.0.1)에서 ?mock 으로 열면 모의 모드(로그인 없이 화면 시험용)
   const MOCK = !CFG.clientId || (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('mock'));
   const EDIT_MS = 5 * 60 * 1000;
-  const APP_VERSION = 'v12';                     // sw.js의 CACHE 이름과 같이 올린다
+  const APP_VERSION = 'v13';                     // sw.js의 CACHE 이름과 같이 올린다
   const $ = s => document.querySelector(s);
 
   // ---------- 기기 저장소(IndexedDB) ----------
@@ -320,7 +320,9 @@
     const body = $('#body').value;
     const isLink = !$('#linkBox').hidden;
     if (!body.trim() && !isLink) return msg('내용이 비어 있습니다', true);
+    if (isLink && !/^https?:\/\/\S+$/i.test($('#url').value.trim())) { $('#url').focus(); return msg('링크 주소를 확인하세요 (http:// 또는 https://로 시작)', true); }
     if (isLink && !$('#note').value.trim()) { $('#note').focus(); return msg('링크는 "왜 저장하나" 한 줄이 필요합니다', true); }
+    if (isLink) $('#url').value = $('#url').value.trim();
     if (editingId) return saveEdit(body);
     const now = new Date();
     const id = newId();
@@ -342,7 +344,10 @@
   async function saveEdit(body) {
     const rec = await get('recent', editingId);
     if (!rec || Date.now() - rec.createdAt > EDIT_MS) { resetForm(); return msg('5분이 지나 수정할 수 없습니다. Drive에서 직접 고치세요.', true); }
-    const f = Object.assign({}, rec.f, { body, sensitive: $('#sensitive').checked, thread: $('#thread').value, note: $('#note').value || rec.f.note });
+    const isLink = !$('#linkBox').hidden;          // 수정하면서 링크를 붙이거나 뺄 수 있다
+    const f = Object.assign({}, rec.f, { body, sensitive: $('#sensitive').checked, thread: $('#thread').value,
+      type: isLink ? 'link' : 'text', url: isLink ? $('#url').value : '', title: isLink ? $('#title').value : '',
+      note: isLink ? $('#note').value : '' });
     const content = buildNote(f);
     await enqueueChange(rec, content, { f, summary: f.sensitive ? '민감 메모' : one(body).slice(0, 80) });
     resetForm();
@@ -380,6 +385,7 @@
     $('#sensitive').checked = !!rec.f.sensitive;
     $('#thread').value = rec.f.thread || '';
     if (rec.f.type === 'link') { showLink(rec.f.url, rec.f.title); $('#note').value = rec.f.note || ''; }
+    else { $('#linkBox').hidden = true; $('#linkAddRow').hidden = false; }
     $('#save').textContent = '수정 저장';
     $('#cancelEdit').hidden = false;
     $('#body').focus();
@@ -389,14 +395,54 @@
     editingId = null;
     $('#form').reset();
     $('#linkBox').hidden = true;
+    $('#linkAddRow').hidden = false;
     $('#save').textContent = '저장';
     $('#cancelEdit').hidden = true;
     $('#body').focus();
   }
   function showLink(url, title) {
     $('#linkBox').hidden = false;
+    $('#linkAddRow').hidden = true;
     $('#url').value = url || '';
     $('#title').value = title || '';
+  }
+  // 공유로 열지 않아도 링크를 붙인다: 버튼, 클립보드, 또는 본문에 주소만 붙여넣기
+  const URL_ONLY = /^\s*(https?:\/\/\S+)\s*$/i;
+  function attachLink(url) {
+    showLink(url, '');
+    setTimeout(() => (url ? $('#note') : $('#url')).focus(), 0);
+  }
+  function wireLinkInput() {
+    $('#addLink').onclick = () => attachLink('');
+    $('#removeLink').onclick = () => {
+      const url = $('#url').value.trim();
+      const body = $('#body');
+      if (url && !body.value.includes(url)) body.value = (body.value ? body.value.replace(/\s*$/, '\n') : '') + url;   // 지운 주소는 본문에 남긴다
+      $('#linkBox').hidden = true;
+      $('#linkAddRow').hidden = false;
+      $('#url').value = $('#title').value = $('#note').value = '';
+      body.focus();
+    };
+    $('#pasteLink').onclick = async () => {
+      try {
+        const t = (await navigator.clipboard.readText()) || '';
+        const m = t.match(/https?:\/\/\S+/i);
+        if (!m) return msg('클립보드에 링크가 없습니다', true);
+        $('#url').value = m[0];
+        $('#note').focus();
+      } catch (e) {
+        $('#url').focus();
+        msg('클립보드를 읽지 못했습니다 — 링크 칸을 길게 눌러 붙여넣으세요', true);
+      }
+    };
+    $('#body').addEventListener('paste', e => {
+      if (!$('#linkBox').hidden) return;
+      const m = (e.clipboardData && e.clipboardData.getData('text') || '').match(URL_ONLY);
+      if (!m) return;
+      e.preventDefault();
+      attachLink(m[1]);
+      msg('링크로 첨부했습니다. 본문에 그대로 두려면 "링크 빼기"');
+    });
   }
   function msg(text, isErr) {
     const m = $('#msg');
@@ -821,6 +867,7 @@
     $('#forceOffline').addEventListener('change', () => { if (!$('#forceOffline').checked) flush(false); });
     window.addEventListener('online', () => flush(false));
     tabs();
+    wireLinkInput();
     readShare();
     $('#body').focus();
     await render();

@@ -28,10 +28,12 @@
   <section id="tab-write">
     <form id="form" autocomplete="off">
       <div id="linkBox" hidden>
-        <label>링크<input id="url" type="url" readonly></label>
-        <label>제목<input id="title" type="text"></label>
+        <label>링크<input id="url" type="url" inputmode="url" placeholder="https://"></label>
+        <label>제목 (선택)<input id="title" type="text"></label>
         <label>왜 저장하나 (한 줄, 필수)<input id="note" type="text" maxlength="200"></label>
+        <div class="row secondary"><button id="pasteLink" type="button">클립보드에서 붙여넣기</button><button id="removeLink" type="button">링크 빼기</button></div>
       </div>
+      <div class="row secondary" id="linkAddRow"><button id="addLink" type="button">+ 링크 첨부</button></div>
       <textarea id="body" rows="7" placeholder="떠오른 것을 그대로 적기. 맨 앞에 ! 를 붙이면 중요 표시" autofocus></textarea>
       <div class="row">
         <select id="thread" aria-label="이어쓰기 대상">

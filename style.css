@@ -81,3 +81,5 @@ button:disabled { cursor: progress; }
 .toast.err { background: #b35900; }
 @media (prefers-color-scheme: dark) { .toast { background: #e6e9ed; color: #0b0f14; } .toast.ok { background: #3fb950; color: #0b0f14; } .toast.err { background: #e3b341; color: #0b0f14; } }
 [hidden] { display: none !important; }
+#linkBox .row { margin-bottom: 10px; }
+#linkAddRow { margin: 0 0 8px; }
