@@ -63,6 +63,9 @@ button.primary { background: var(--accent); color: var(--accent-fg); border-colo
 .proposals .state.reject { color: var(--warn); }
 .proposals li.sent { opacity: .85; }
 .proposals li.closed { opacity: .6; font-size: 13px; }
+.proposals li.section-head { background: none; border: 0; padding: 14px 0 2px; font-size: 14px; font-weight: 700; color: var(--fg); }
+.proposals li.section-head .hint { font-weight: 400; margin: 2px 0 0; }
+.proposals select { margin-top: 8px; }
 .proposals li.closed-head { background: none; border: 0; padding: 8px 0 0; font-size: 12px; color: var(--muted); }
 .proposals .kind { font-size: 12px; color: var(--accent); font-weight: 600; margin-right: 4px; }
 details { margin-top: 24px; font-size: 13px; color: var(--muted); }

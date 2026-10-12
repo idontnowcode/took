@@ -8,7 +8,7 @@
   // 클라이언트 ID가 없거나, 이 PC의 미리보기(127.0.0.1)에서 ?mock 으로 열면 모의 모드(로그인 없이 화면 시험용)
   const MOCK = !CFG.clientId || (location.hostname === '127.0.0.1' && new URLSearchParams(location.search).has('mock'));
   const EDIT_MS = 5 * 60 * 1000;
-  const APP_VERSION = 'v11';                     // sw.js의 CACHE 이름과 같이 올린다
+  const APP_VERSION = 'v12';                     // sw.js의 CACHE 이름과 같이 올린다
   const $ = s => document.querySelector(s);
 
   // ---------- 기기 저장소(IndexedDB) ----------
@@ -102,6 +102,8 @@
   const SAMPLE_LIST = '- example-idea | 예시 아이디어 | 다듬는 중\n';
   const SAMPLE_PROPOSALS = '# 제안 목록\n\n- [ ] [일정] 2026-10-14 예시 약속 (원본: 00_Inbox/예시.md) <!--ex1-->\n' +
     '- [ ] [이동] 00_Inbox/예시2.md → 02_Learning (확신도 0.72) · 예시 메모 <!--ex2-->\n- [x] [이동] 이미 승인된 예시 <!--ex3-->\n';
+  const SAMPLE_JUDG = '# 자동 판정 확인\n\n- jx1 | 할 일 | 01_Daily | 0.9 | 세탁소에 코트 맡기기\n- jx2 | 이동 | 02_Learning/01_Concept | 0.92 | CAN 종단 저항 이유 정리\n';
+  const SAMPLE_HOLDS = '# 보류\n\n- hx1 | 판단 보류 | 그거 내일 다시 확인\n- hx2 | 안전 검사 | 안전 검사에 걸린 메모 — 내용은 PC에서 확인\n';
   const Mock = {
     label: '모의 모드 — 이 기기에만 저장',
     store() { try { return JSON.parse(localStorage.getItem('took-mock') || '{}'); } catch (e) { return {}; } },
@@ -125,6 +127,8 @@
     async readText(name) {
       this.check();
       if (name === '승인.md') return localStorage.getItem('took-mock-approvals') || '';
+      if (name === '판정.md') return localStorage.getItem('took-mock-file-판정.md') || SAMPLE_JUDG;
+      if (name === '보류.md') return localStorage.getItem('took-mock-file-보류.md') || SAMPLE_HOLDS;
       return name === '목록.md' ? SAMPLE_LIST : name === '제안.md' ? SAMPLE_PROPOSALS : SAMPLE_BRIEF;
     },
     async writeText(name, content) {
@@ -487,8 +491,13 @@
     }
   }
 
-  // ---------- 승인 탭: 제안 사본을 읽고, 항목마다 승인·거절을 골라 승인.md에 쓴다(PC가 다음 실행에 반영) ----------
-  // 승인.md 한 줄: "- <key> | approve|reject | 시각". 제안.md에서 PC가 반영한 줄은 [x](승인)·[-](거절)로 바뀐다.
+  // ---------- 승인 탭: 제안(승인·거절) · 자동 판정 확인(채점) · 보류(결정) ----------
+  // 모두 승인.md 한 파일에 "- <key> | <action> | 시각"으로 보내고, PC가 다음 실행에 반영한다.
+  //   제안: approve | approve-cal | reject     채점: O | X:<폴더> | S     보류: keep | discard | to:<폴더>
+  const FOLDERS = [['01_Daily', '일일 기록·할 일'], ['02_Learning', '학습'], ['02_Learning/01_Concept', '학습 · 개념'],
+    ['02_Learning/02_Practice', '학습 · 실습'], ['02_Learning/03_Project_Knowledge', '학습 · 프로젝트 지식'], ['03_Project', '프로젝트'],
+    ['03_Project/_아이디어/_씨앗', '아이디어 씨앗'], ['04_Career', '커리어'], ['99_Archive/_폐기후보', '폐기']];
+  const folderLabel = f => (FOLDERS.find(x => x[0] === f) || [f, f])[1];
   function parseProposals(md) {
     const out = [];
     for (const line of (md || '').split(/\r?\n/)) {
@@ -500,110 +509,171 @@
     }
     return out;
   }
+  function parseList(md) {                      // 판정.md·보류.md: "- key | 칸 | 칸 …"
+    return (md || '').split(/\r?\n/).filter(l => /^\s*-\s+\S+\s*\|/.test(l))
+      .map(l => l.replace(/^\s*-\s+/, '').split(/\s*\|\s*/));
+  }
   function parseApprovals(md) {
     const map = new Map();
     for (const l of (md || '').split(/\r?\n/)) {
-      const m = l.match(/^\s*-\s*(\S+)(?:\s*\|\s*(approve-cal|approve|reject))?/);
-      if (m) map.set(m[1], m[2] || 'approve');
+      const m = l.match(/^\s*-\s*(\S+)\s*(?:\|\s*([^|\s]+))?/);
+      if (m) map.set(m[1], m[2] && !/^\d{4}-/.test(m[2]) ? m[2] : 'approve');
     }
     return map;
   }
+  const ACT = { approve: '승인', 'approve-cal': '승인 · 캘린더에 등록됨', reject: '거절', O: '맞음', S: '민감(AI에 보내면 안 됐음)', keep: '그대로 두기', discard: '버리기' };
+  function actLabel(a) {
+    if (a.startsWith('X:')) return '틀림 → ' + folderLabel(a.slice(2));
+    if (a.startsWith('to:')) return '분류 → ' + folderLabel(a.slice(3));
+    return ACT[a] || a;
+  }
+  const complete = a => !(a === 'X:' || a === 'to:');
 
-  let approvalsView = { items: [], pending: new Map() };
-  const choices = new Map();                    // 아직 보내지 않은 선택: key → approve|reject
+  let view = { items: [], judg: [], holds: [], pending: new Map() };
+  const choices = new Map();                    // 아직 보내지 않은 선택: key → action
+
+  function sectionHead(ul, title, note) {
+    const h = document.createElement('li');
+    h.className = 'section-head';
+    h.textContent = title;
+    if (note) { const s = document.createElement('div'); s.className = 'hint'; s.textContent = note; h.append(s); }
+    ul.append(h);
+  }
+  function card(ul, key, kind, text, buttons, pick) {
+    const li = document.createElement('li');
+    const body = document.createElement('div');
+    if (kind) { const k = document.createElement('span'); k.className = 'kind'; k.textContent = kind; body.append(k); }
+    body.append(text);
+    li.append(body);
+    const acts = document.createElement('div');
+    acts.className = 'acts';
+    const sent = view.pending.get(key);
+    if (sent) {
+      li.classList.add('sent');
+      const s = document.createElement('div');
+      s.className = 'state ' + (sent === 'reject' || sent === 'discard' || sent.startsWith('X') || sent === 'S' ? 'reject' : 'approve');
+      s.textContent = (sent === 'approve-cal' ? '' : '보냄: ') + actLabel(sent) + (sent === 'approve-cal' ? '' : ' · 다음 PC 실행 때 반영');
+      li.append(s);
+      if (sent !== 'approve-cal') {             // 캘린더에 이미 넣은 일정은 되돌리지 않는다(지우려면 캘린더에서 직접)
+        const undo = document.createElement('button');
+        undo.type = 'button';
+        undo.textContent = '되돌리기';
+        undo.onclick = () => { view.pending.delete(key); choices.delete(key); renderApprovals(); markDirty(); };
+        acts.append(undo);
+      }
+    } else {
+      const cur = choices.get(key) || '';
+      for (const [act, label, cls] of buttons) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = label;
+        const on = act.endsWith(':') ? cur.startsWith(act) : cur === act;
+        b.className = 'choice ' + cls + (on ? ' on' : '');
+        b.setAttribute('aria-pressed', String(on));
+        b.onclick = () => { on ? choices.delete(key) : choices.set(key, act); renderApprovals(); markDirty(); };
+        acts.append(b);
+      }
+      if (pick && cur.startsWith(pick)) {        // 틀림·분류: 맞는 폴더 고르기
+        const sel = document.createElement('select');
+        sel.innerHTML = '<option value="">어디가 맞나요?</option>' + FOLDERS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+        sel.value = cur.slice(pick.length);
+        sel.onchange = () => { choices.set(key, pick + sel.value); markDirty(); };
+        li.append(acts, sel);
+        ul.append(li);
+        return;
+      }
+    }
+    li.append(acts);
+    ul.append(li);
+  }
 
   function renderApprovals() {
     const ul = $('#proposals');
     ul.textContent = '';
-    const open = approvalsView.items.filter(i => i.state === 'open').slice(0, 10);   // 한 번에 10개까지(Rule 14장)
-    const closed = approvalsView.items.filter(i => i.state !== 'open').slice(-5);
-    if (!open.length && !closed.length) { ul.innerHTML = '<li>승인할 제안이 없습니다.</li>'; return; }
-    const head = (text, cls) => { const p = document.createElement('div'); p.className = 'state ' + (cls || ''); p.textContent = text; return p; };
-    for (const it of open) {
-      const li = document.createElement('li');
-      const body = document.createElement('div');
-      const kind = document.createElement('span');
-      kind.className = 'kind';
-      kind.textContent = it.kind;
-      body.append(kind, it.text);
-      li.append(body);
-      const sent = approvalsView.pending.get(it.key);
-      const acts = document.createElement('div');
-      acts.className = 'acts';
-      if (sent) {
-        li.classList.add('sent');
-        li.append(head(sent === 'approve-cal' ? '승인 · 캘린더에 등록됨' : sent === 'approve' ? '승인 보냄 · 다음 PC 실행 때 반영' : '거절 보냄 · 다음 PC 실행 때 반영', sent === 'reject' ? 'reject' : 'approve'));
-        if (sent !== 'approve-cal') {              // 캘린더에 이미 넣은 일정은 되돌리지 않는다(지우려면 캘린더에서 직접)
-          const undo = document.createElement('button');
-          undo.type = 'button';
-          undo.textContent = '되돌리기';
-          undo.onclick = () => { approvalsView.pending.delete(it.key); choices.delete(it.key); renderApprovals(); markDirty(); };
-          acts.append(undo);
-        }
-      } else {
-        for (const [act, label] of [['approve', '승인'], ['reject', '거절']]) {
-          const b = document.createElement('button');
-          b.type = 'button';
-          b.textContent = label;
-          b.className = 'choice ' + act + (choices.get(it.key) === act ? ' on' : '');
-          b.setAttribute('aria-pressed', String(choices.get(it.key) === act));
-          b.onclick = () => { choices.get(it.key) === act ? choices.delete(it.key) : choices.set(it.key, act); renderApprovals(); markDirty(); };
-          acts.append(b);
-        }
+    const open = view.items.filter(i => i.state === 'open').slice(0, 10);   // 한 번에 10개까지(Rule 14장)
+    const closed = view.items.filter(i => i.state !== 'open').slice(-3);
+    if (!open.length && !view.judg.length && !view.holds.length && !closed.length) {
+      ul.innerHTML = '<li>확인할 것이 없습니다.</li>';
+      return;
+    }
+    if (open.length) {
+      sectionHead(ul, `제안 ${open.length}건`, 'AI가 확신하지 못한 것. 승인하면 반영, 거절하면 닫힙니다. 일정은 승인 즉시 캘린더에 들어갑니다.');
+      for (const it of open) card(ul, it.key, it.kind, it.text, [['approve', '승인', 'approve'], ['reject', '거절', 'reject']]);
+    }
+    if (view.judg.length) {
+      sectionHead(ul, `자동 판정 확인 ${view.judg.length}건`, 'AI가 확신해서 자동으로 처리하려던 것. 맞는지 눌러 주세요(시험 채점, 50건이 모이면 자동 정리를 켤지 판단).');
+      for (const [key, verdict, folder, conf, ex] of view.judg) {
+        card(ul, key, verdict, `${ex || ''}  → ${folderLabel(folder || '')}${conf ? ` (확신도 ${conf})` : ''}`,
+          [['O', '맞음', 'approve'], ['X:', '틀림', 'reject'], ['S', '민감', 'reject']], 'X:');
       }
-      li.append(acts);
-      ul.append(li);
+    }
+    if (view.holds.length) {
+      sectionHead(ul, `보류 ${view.holds.length}건`, '판단을 미룬 메모. 그대로 두면 30일 뒤 다시 묻습니다.');
+      for (const [key, why, ex] of view.holds) {
+        card(ul, key, why, ex || '', [['keep', '그대로', ''], ['discard', '버리기', 'reject'], ['to:', '분류', 'approve']], 'to:');
+      }
     }
     if (closed.length) {
       const h = document.createElement('li');
       h.className = 'closed-head';
-      h.textContent = '최근 처리됨';
+      h.textContent = '최근 처리된 제안';
       ul.append(h);
       for (const it of closed) {
         const li = document.createElement('li');
         li.className = 'closed';
-        li.append(head(it.state === 'approved' ? '처리됨 · 승인' : '처리됨 · 거절', it.state === 'approved' ? 'approve' : 'reject'));
-        const body = document.createElement('div');
-        body.textContent = `${it.kind ? '[' + it.kind + '] ' : ''}${it.text}`;
-        li.append(body);
+        const s = document.createElement('div');
+        s.className = 'state ' + (it.state === 'approved' ? 'approve' : 'reject');
+        s.textContent = it.state === 'approved' ? '처리됨 · 승인' : '처리됨 · 거절';
+        const b = document.createElement('div');
+        b.textContent = `${it.kind ? '[' + it.kind + '] ' : ''}${it.text}`;
+        li.append(s, b);
         ul.append(li);
       }
     }
   }
   let dirty = false;
   function markDirty() {
-    dirty = choices.size > 0 || dirty;
-    $('#sendApprovals').textContent = choices.size ? `보내기 (${choices.size})` : (dirty ? '변경 보내기' : '보내기');
+    const n = [...choices.values()].filter(complete).length;
+    dirty = n > 0 || dirty;
+    $('#sendApprovals').textContent = n ? `보내기 (${n})` : (dirty ? '변경 보내기' : '보내기');
   }
 
   async function loadApprovals(interactive) {
     const am = $('#approveMsg');
     am.textContent = '';
     const cached = await get('kv', 'approvals-view');
-    if (cached && !interactive) { approvalsView = { items: cached.items, pending: new Map(cached.pending) }; renderApprovals(); }
+    if (cached && !interactive && cached.judg) {
+      view = { items: cached.items, judg: cached.judg, holds: cached.holds, pending: new Map(cached.pending) };
+      renderApprovals();
+    }
     try {
-      const prop = await B.readText('제안.md', interactive);      // 순서대로 읽는다(동시에 읽으면 로그인 창이 두 번 뜬다)
+      // 순서대로 읽는다(동시에 읽으면 로그인 창이 여러 번 뜬다)
+      const prop = await B.readText('제안.md', interactive);
+      const judg = await B.readText('판정.md', interactive);
+      const holds = await B.readText('보류.md', interactive);
       const appr = await B.readText('승인.md', interactive);
-      approvalsView = { items: parseProposals(prop), pending: parseApprovals(appr) };
-      for (const [k] of approvalsView.pending) if (!approvalsView.items.some(i => i.key === k && i.state === 'open')) approvalsView.pending.delete(k);
-      await put('kv', { items: approvalsView.items, pending: [...approvalsView.pending] }, 'approvals-view');
+      view = { items: parseProposals(prop), judg: parseList(judg), holds: parseList(holds), pending: parseApprovals(appr) };
+      const live = new Set([...view.items.filter(i => i.state === 'open').map(i => i.key), ...view.judg.map(r => r[0]), ...view.holds.map(r => r[0])]);
+      for (const [k] of view.pending) if (!live.has(k)) view.pending.delete(k);      // PC가 이미 반영한 것
+      await put('kv', { items: view.items, judg: view.judg, holds: view.holds, pending: [...view.pending] }, 'approvals-view');
       choices.clear(); dirty = false; markDirty();
       renderApprovals();
     } catch (e) {
       if (!cached) $('#proposals').textContent = '';
       am.className = 'msg' + (e.message === '로그인 필요' ? '' : ' err');
-      am.textContent = e.message === '로그인 필요' ? '최신 제안을 받으려면 "다시 불러오기"를 누르세요' : '불러오지 못함: ' + e.message;
+      am.textContent = e.message === '로그인 필요' ? '최신 목록을 받으려면 "다시 불러오기"를 누르세요' : '불러오지 못함: ' + e.message;
     }
   }
 
   async function sendApprovals() {
     const am = $('#approveMsg');
-    const merged = new Map(approvalsView.pending);
+    const merged = new Map(view.pending);
     const calErrors = [];
-    let calOk = 0;
+    let calOk = 0, skipped = 0;
     for (const [k, v] of choices) {
+      if (!complete(v)) { skipped++; continue; }                     // 틀림·분류인데 폴더를 안 고름
       merged.set(k, v);
-      const it = approvalsView.items.find(i => i.key === k);
+      const it = view.items.find(i => i.key === k);
       if (v !== 'approve' || !it || it.kind !== '일정') continue;
       const ev = parseEvent(it);
       if (!ev) { calErrors.push('날짜를 못 읽음'); continue; }
@@ -613,13 +683,15 @@
     const stamp = localIso(new Date());
     try {
       await B.writeText('승인.md', [...merged].map(([k, v]) => `- ${k} | ${v} | ${stamp}`).join('\n') + (merged.size ? '\n' : ''), true);
-      approvalsView.pending = merged;
-      choices.clear(); dirty = false; markDirty();
-      await put('kv', { items: approvalsView.items, pending: [...merged] }, 'approvals-view');
+      view.pending = merged;
+      for (const k of [...choices.keys()]) if (complete(choices.get(k))) choices.delete(k);
+      dirty = false; markDirty();
+      await put('kv', { items: view.items, judg: view.judg, holds: view.holds, pending: [...merged] }, 'approvals-view');
       renderApprovals();
       am.className = 'msg';
-      am.textContent = (merged.size ? `보냄 — 승인 ${[...merged.values()].filter(v => v !== 'reject').length}건, 거절 ${[...merged.values()].filter(v => v === 'reject').length}건. 다음 PC 실행 때 반영됩니다` : '보낸 것을 모두 되돌렸습니다')
-        + (calOk ? ` · 캘린더에 ${calOk}건 등록` : '') + (calErrors.length ? ` · 캘린더 등록 못 함(${calErrors[0]}) — 요약의 링크로 추가하세요` : '');
+      am.textContent = (merged.size ? `보냄 ${merged.size}건 — 다음 PC 실행 때 반영됩니다` : '보낸 것을 모두 되돌렸습니다')
+        + (calOk ? ` · 캘린더에 ${calOk}건 등록` : '') + (calErrors.length ? ` · 캘린더 등록 못 함(${calErrors[0]}) — 요약의 링크로 추가하세요` : '')
+        + (skipped ? ` · 폴더를 안 고른 ${skipped}건은 보내지 않음` : '');
     } catch (e) {
       am.className = 'msg err';
       am.textContent = '보내지 못함: ' + e.message;
